@@ -1,5 +1,7 @@
 """
-Simple file-based persistence for repositories, users, walkthroughs, and documentation
+Persistence layer using AWS DynamoDB for structured data and S3 for audio files.
+
+Replaces the previous file-based JSON persistence with cloud-native AWS services.
 """
 
 import json
@@ -7,6 +9,10 @@ import os
 import base64
 from typing import Dict, Optional, Any, List
 from datetime import datetime
+from decimal import Decimal
+
+import boto3
+from botocore.exceptions import ClientError
 
 from app.config import get_settings
 from app.models.schemas import (
@@ -17,209 +23,286 @@ from app.models.schemas import (
 
 settings = get_settings()
 
-# Persistence directory
-PERSISTENCE_DIR = os.path.join(settings.repos_directory, ".persistence")
-REPOS_FILE = os.path.join(PERSISTENCE_DIR, "repositories.json")
-USERS_FILE = os.path.join(PERSISTENCE_DIR, "users.json")
-WALKTHROUGHS_FILE = os.path.join(PERSISTENCE_DIR, "walkthroughs.json")
-AUDIO_WALKTHROUGHS_FILE = os.path.join(PERSISTENCE_DIR, "audio_walkthroughs.json")
-AUDIO_BYTES_DIR = os.path.join(PERSISTENCE_DIR, "audio_bytes")
-DOCS_CACHE_FILE = os.path.join(PERSISTENCE_DIR, "documentation_cache.json")
+
+# ---------------------------------------------------------------------------
+# AWS Client Helpers
+# ---------------------------------------------------------------------------
+
+def _get_dynamodb_resource():
+    """Get a boto3 DynamoDB resource"""
+    kwargs = {"region_name": settings.aws_region}
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    return boto3.resource("dynamodb", **kwargs)
 
 
-def ensure_persistence_dir():
-    """Ensure persistence directory exists"""
-    os.makedirs(PERSISTENCE_DIR, exist_ok=True)
+def _get_s3_client():
+    """Get a boto3 S3 client"""
+    kwargs = {"region_name": settings.aws_region}
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    return boto3.client("s3", **kwargs)
 
+
+def _table_name(suffix: str) -> str:
+    """Build full table name from prefix"""
+    return f"{settings.dynamodb_table_prefix}_{suffix}"
+
+
+def _safe_int(value, default=0):
+    """Convert DynamoDB Decimal to int safely"""
+    if value is None:
+        return default
+    return int(value)
+
+
+def _safe_float(value, default=0.0):
+    """Convert DynamoDB Decimal to float safely"""
+    if value is None:
+        return default
+    return float(value)
+
+
+# ---------------------------------------------------------------------------
+# Repository Persistence
+# ---------------------------------------------------------------------------
 
 def save_repositories(repositories: Dict[str, Repository]):
-    """Save repositories to file"""
-    ensure_persistence_dir()
-    
-    # Convert Repository objects to dict
-    repos_dict = {}
-    for repo_id, repo in repositories.items():
-        repos_dict[repo_id] = {
-            "id": repo.id,
-            "user_id": repo.user_id,
-            "github_repo_id": repo.github_repo_id,
-            "name": repo.name,
-            "full_name": repo.full_name,
-            "description": repo.description,
-            "default_branch": repo.default_branch,
-            "language": repo.language,
-            "clone_url": repo.clone_url,
-            "local_path": repo.local_path,
-            "is_indexed": repo.is_indexed,
-            "indexed_at": repo.indexed_at.isoformat() if repo.indexed_at else None,
-            "created_at": repo.created_at.isoformat() if repo.created_at else None,
-        }
-    
-    with open(REPOS_FILE, 'w') as f:
-        json.dump(repos_dict, f, indent=2)
+    """Save repositories to DynamoDB"""
+    try:
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("repositories"))
+
+        with table.batch_writer() as batch:
+            for repo_id, repo in repositories.items():
+                item = {
+                    "id": repo.id,
+                    "user_id": repo.user_id,
+                    "github_repo_id": repo.github_repo_id,
+                    "name": repo.name,
+                    "full_name": repo.full_name,
+                    "description": repo.description or "",
+                    "default_branch": repo.default_branch,
+                    "language": repo.language or "",
+                    "clone_url": repo.clone_url,
+                    "local_path": repo.local_path or "",
+                    "is_indexed": repo.is_indexed,
+                    "indexed_at": repo.indexed_at.isoformat() if repo.indexed_at else "",
+                    "created_at": repo.created_at.isoformat() if repo.created_at else "",
+                }
+                batch.put_item(Item=item)
+    except Exception as e:
+        print(f"Error saving repositories to DynamoDB: {e}")
 
 
 def load_repositories() -> Dict[str, Repository]:
-    """Load repositories from file"""
-    if not os.path.exists(REPOS_FILE):
-        return {}
-    
+    """Load repositories from DynamoDB"""
     try:
-        with open(REPOS_FILE, 'r') as f:
-            repos_dict = json.load(f)
-        
-        # Convert dict to Repository objects
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("repositories"))
+        response = table.scan()
+
         repositories = {}
-        for repo_id, repo_data in repos_dict.items():
-            # Parse datetime fields
+        for item in response.get("Items", []):
             indexed_at = None
-            if repo_data.get("indexed_at"):
+            if item.get("indexed_at"):
                 try:
-                    indexed_at = datetime.fromisoformat(repo_data["indexed_at"])
-                except:
+                    indexed_at = datetime.fromisoformat(item["indexed_at"])
+                except Exception:
                     pass
-            
+
             created_at = datetime.utcnow()
-            if repo_data.get("created_at"):
+            if item.get("created_at"):
                 try:
-                    created_at = datetime.fromisoformat(repo_data["created_at"])
-                except:
+                    created_at = datetime.fromisoformat(item["created_at"])
+                except Exception:
                     pass
-            
-            repositories[repo_id] = Repository(
-                id=repo_data["id"],
-                user_id=repo_data["user_id"],
-                github_repo_id=repo_data["github_repo_id"],
-                name=repo_data["name"],
-                full_name=repo_data["full_name"],
-                description=repo_data.get("description"),
-                default_branch=repo_data.get("default_branch", "main"),
-                language=repo_data.get("language"),
-                clone_url=repo_data["clone_url"],
-                local_path=repo_data.get("local_path"),
-                is_indexed=repo_data.get("is_indexed", False),
+
+            repositories[item["id"]] = Repository(
+                id=item["id"],
+                user_id=item["user_id"],
+                github_repo_id=_safe_int(item.get("github_repo_id")),
+                name=item["name"],
+                full_name=item["full_name"],
+                description=item.get("description") or None,
+                default_branch=item.get("default_branch", "main"),
+                language=item.get("language") or None,
+                clone_url=item["clone_url"],
+                local_path=item.get("local_path") or None,
+                is_indexed=item.get("is_indexed", False),
                 indexed_at=indexed_at,
                 created_at=created_at,
             )
-        
+
+        # Handle pagination
+        while response.get("LastEvaluatedKey"):
+            response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+            for item in response.get("Items", []):
+                indexed_at = None
+                if item.get("indexed_at"):
+                    try:
+                        indexed_at = datetime.fromisoformat(item["indexed_at"])
+                    except Exception:
+                        pass
+                created_at = datetime.utcnow()
+                if item.get("created_at"):
+                    try:
+                        created_at = datetime.fromisoformat(item["created_at"])
+                    except Exception:
+                        pass
+                repositories[item["id"]] = Repository(
+                    id=item["id"],
+                    user_id=item["user_id"],
+                    github_repo_id=_safe_int(item.get("github_repo_id")),
+                    name=item["name"],
+                    full_name=item["full_name"],
+                    description=item.get("description") or None,
+                    default_branch=item.get("default_branch", "main"),
+                    language=item.get("language") or None,
+                    clone_url=item["clone_url"],
+                    local_path=item.get("local_path") or None,
+                    is_indexed=item.get("is_indexed", False),
+                    indexed_at=indexed_at,
+                    created_at=created_at,
+                )
+
         return repositories
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            print(f"⚠️ DynamoDB table '{_table_name('repositories')}' not found.")
+        else:
+            print(f"Error loading repositories: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading repositories: {e}")
         return {}
 
 
+# ---------------------------------------------------------------------------
+# User Persistence
+# ---------------------------------------------------------------------------
+
 def save_users(users: Dict[str, User]):
-    """Save users to file"""
-    ensure_persistence_dir()
-    
-    # Convert User objects to dict
-    users_dict = {}
-    for user_id, user in users.items():
-        users_dict[user_id] = {
-            "id": user.id,
-            "github_id": user.github_id,
-            "username": user.username,
-            "email": user.email,
-            "avatar_url": user.avatar_url,
-            "access_token": user.access_token,
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-        }
-    
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users_dict, f, indent=2)
+    """Save users to DynamoDB"""
+    try:
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("users"))
+
+        with table.batch_writer() as batch:
+            for user_id, user in users.items():
+                item = {
+                    "id": user.id,
+                    "github_id": user.github_id,
+                    "username": user.username,
+                    "email": user.email or "",
+                    "avatar_url": user.avatar_url or "",
+                    "access_token": user.access_token,
+                    "created_at": user.created_at.isoformat() if user.created_at else "",
+                }
+                batch.put_item(Item=item)
+    except Exception as e:
+        print(f"Error saving users to DynamoDB: {e}")
 
 
 def load_users() -> Dict[str, User]:
-    """Load users from file"""
-    if not os.path.exists(USERS_FILE):
-        return {}
-    
+    """Load users from DynamoDB"""
     try:
-        with open(USERS_FILE, 'r') as f:
-            users_dict = json.load(f)
-        
-        # Convert dict to User objects
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("users"))
+        response = table.scan()
+
         users = {}
-        for user_id, user_data in users_dict.items():
+        for item in response.get("Items", []):
             created_at = datetime.utcnow()
-            if user_data.get("created_at"):
+            if item.get("created_at"):
                 try:
-                    created_at = datetime.fromisoformat(user_data["created_at"])
-                except:
+                    created_at = datetime.fromisoformat(item["created_at"])
+                except Exception:
                     pass
-            
-            users[user_id] = User(
-                id=user_data["id"],
-                github_id=user_data["github_id"],
-                username=user_data["username"],
-                email=user_data.get("email"),
-                avatar_url=user_data.get("avatar_url"),
-                access_token=user_data["access_token"],
+
+            users[item["id"]] = User(
+                id=item["id"],
+                github_id=_safe_int(item.get("github_id")),
+                username=item["username"],
+                email=item.get("email") or None,
+                avatar_url=item.get("avatar_url") or None,
+                access_token=item["access_token"],
                 created_at=created_at,
             )
-        
+
         return users
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            print(f"⚠️ DynamoDB table '{_table_name('users')}' not found.")
+        else:
+            print(f"Error loading users: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading users: {e}")
         return {}
 
 
-# ============================================================
+# ---------------------------------------------------------------------------
 # Walkthrough Persistence
-# ============================================================
+# ---------------------------------------------------------------------------
 
 def save_walkthroughs(walkthroughs: Dict[str, WalkthroughScript]):
-    """Save walkthrough scripts to file"""
-    ensure_persistence_dir()
+    """Save walkthrough scripts to DynamoDB"""
+    try:
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("walkthroughs"))
 
-    data = {}
-    for wt_id, wt in walkthroughs.items():
-        data[wt_id] = {
-            "id": wt.id,
-            "file_path": wt.file_path,
-            "title": wt.title,
-            "summary": wt.summary,
-            "view_mode": wt.view_mode.value,
-            "segments": [
-                {
-                    "id": seg.id,
-                    "order": seg.order,
-                    "text": seg.text,
-                    "start_line": seg.start_line,
-                    "end_line": seg.end_line,
-                    "highlight_lines": seg.highlight_lines,
-                    "duration_estimate": seg.duration_estimate,
-                    "code_context": seg.code_context,
+        with table.batch_writer() as batch:
+            for wt_id, wt in walkthroughs.items():
+                segments_data = [
+                    {
+                        "id": seg.id,
+                        "order": seg.order,
+                        "text": seg.text,
+                        "start_line": seg.start_line,
+                        "end_line": seg.end_line,
+                        "highlight_lines": seg.highlight_lines,
+                        "duration_estimate": str(seg.duration_estimate),
+                        "code_context": seg.code_context or "",
+                    }
+                    for seg in wt.segments
+                ]
+
+                item = {
+                    "id": wt.id,
+                    "file_path": wt.file_path,
+                    "title": wt.title,
+                    "summary": wt.summary,
+                    "view_mode": wt.view_mode.value,
+                    "segments_json": json.dumps(segments_data),
+                    "total_duration": str(wt.total_duration),
+                    "created_at": wt.created_at.isoformat() if wt.created_at else "",
+                    "metadata_json": json.dumps(wt.metadata, default=str),
                 }
-                for seg in wt.segments
-            ],
-            "total_duration": wt.total_duration,
-            "created_at": wt.created_at.isoformat() if wt.created_at else None,
-            "metadata": wt.metadata,
-        }
-
-    with open(WALKTHROUGHS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+                batch.put_item(Item=item)
+    except Exception as e:
+        print(f"Error saving walkthroughs to DynamoDB: {e}")
 
 
 def load_walkthroughs() -> Dict[str, WalkthroughScript]:
-    """Load walkthrough scripts from file"""
-    if not os.path.exists(WALKTHROUGHS_FILE):
-        return {}
-
+    """Load walkthrough scripts from DynamoDB"""
     try:
-        with open(WALKTHROUGHS_FILE, "r") as f:
-            data = json.load(f)
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("walkthroughs"))
+        response = table.scan()
 
         walkthroughs: Dict[str, WalkthroughScript] = {}
-        for wt_id, wt_data in data.items():
+        for item in response.get("Items", []):
             created_at = datetime.utcnow()
-            if wt_data.get("created_at"):
+            if item.get("created_at"):
                 try:
-                    created_at = datetime.fromisoformat(wt_data["created_at"])
+                    created_at = datetime.fromisoformat(item["created_at"])
                 except Exception:
                     pass
 
+            segments_data = json.loads(item.get("segments_json", "[]"))
             segments = [
                 ScriptSegment(
                     id=seg["id"],
@@ -228,187 +311,231 @@ def load_walkthroughs() -> Dict[str, WalkthroughScript]:
                     start_line=seg["start_line"],
                     end_line=seg["end_line"],
                     highlight_lines=seg.get("highlight_lines", []),
-                    duration_estimate=seg.get("duration_estimate", 0),
-                    code_context=seg.get("code_context"),
+                    duration_estimate=float(seg.get("duration_estimate", 0)),
+                    code_context=seg.get("code_context") or None,
                 )
-                for seg in wt_data.get("segments", [])
+                for seg in segments_data
             ]
 
-            walkthroughs[wt_id] = WalkthroughScript(
-                id=wt_data["id"],
-                file_path=wt_data["file_path"],
-                title=wt_data["title"],
-                summary=wt_data["summary"],
-                view_mode=ViewMode(wt_data.get("view_mode", "developer")),
+            metadata = json.loads(item.get("metadata_json", "{}"))
+
+            walkthroughs[item["id"]] = WalkthroughScript(
+                id=item["id"],
+                file_path=item["file_path"],
+                title=item["title"],
+                summary=item["summary"],
+                view_mode=ViewMode(item.get("view_mode", "developer")),
                 segments=segments,
-                total_duration=wt_data.get("total_duration", 0),
+                total_duration=float(item.get("total_duration", 0)),
                 created_at=created_at,
-                metadata=wt_data.get("metadata", {}),
+                metadata=metadata,
             )
 
         return walkthroughs
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            print(f"⚠️ DynamoDB table '{_table_name('walkthroughs')}' not found.")
+        else:
+            print(f"Error loading walkthroughs: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading walkthroughs: {e}")
         return {}
 
 
-# ============================================================
+# ---------------------------------------------------------------------------
 # Audio Walkthrough Persistence
-# ============================================================
+# ---------------------------------------------------------------------------
 
 def save_audio_walkthroughs(audio_walkthroughs: Dict[str, AudioWalkthrough]):
-    """Save audio walkthrough metadata to file"""
-    ensure_persistence_dir()
+    """Save audio walkthrough metadata to DynamoDB"""
+    try:
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("audio_walkthroughs"))
 
-    data = {}
-    for aw_id, aw in audio_walkthroughs.items():
-        data[aw_id] = {
-            "id": aw.id,
-            "walkthrough_script_id": aw.walkthrough_script_id,
-            "file_path": aw.file_path,
-            "audio_segments": [
-                {
-                    "id": seg.id,
-                    "script_segment_id": seg.script_segment_id,
-                    "audio_url": seg.audio_url,
-                    "duration": seg.duration,
-                    "start_time": seg.start_time,
-                    "end_time": seg.end_time,
+        with table.batch_writer() as batch:
+            for aw_id, aw in audio_walkthroughs.items():
+                segments_data = [
+                    {
+                        "id": seg.id,
+                        "script_segment_id": seg.script_segment_id,
+                        "audio_url": seg.audio_url,
+                        "duration": str(seg.duration),
+                        "start_time": str(seg.start_time),
+                        "end_time": str(seg.end_time),
+                    }
+                    for seg in aw.audio_segments
+                ]
+
+                item = {
+                    "id": aw.id,
+                    "walkthrough_script_id": aw.walkthrough_script_id,
+                    "file_path": aw.file_path,
+                    "audio_segments_json": json.dumps(segments_data),
+                    "full_audio_url": aw.full_audio_url or "",
+                    "total_duration": str(aw.total_duration),
+                    "created_at": aw.created_at.isoformat() if aw.created_at else "",
                 }
-                for seg in aw.audio_segments
-            ],
-            "full_audio_url": aw.full_audio_url,
-            "total_duration": aw.total_duration,
-            "created_at": aw.created_at.isoformat() if aw.created_at else None,
-        }
-
-    with open(AUDIO_WALKTHROUGHS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+                batch.put_item(Item=item)
+    except Exception as e:
+        print(f"Error saving audio walkthroughs to DynamoDB: {e}")
 
 
 def load_audio_walkthroughs() -> Dict[str, AudioWalkthrough]:
-    """Load audio walkthrough metadata from file"""
-    if not os.path.exists(AUDIO_WALKTHROUGHS_FILE):
-        return {}
-
+    """Load audio walkthrough metadata from DynamoDB"""
     try:
-        with open(AUDIO_WALKTHROUGHS_FILE, "r") as f:
-            data = json.load(f)
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("audio_walkthroughs"))
+        response = table.scan()
 
         audio_walkthroughs: Dict[str, AudioWalkthrough] = {}
-        for aw_id, aw_data in data.items():
+        for item in response.get("Items", []):
             created_at = datetime.utcnow()
-            if aw_data.get("created_at"):
+            if item.get("created_at"):
                 try:
-                    created_at = datetime.fromisoformat(aw_data["created_at"])
+                    created_at = datetime.fromisoformat(item["created_at"])
                 except Exception:
                     pass
 
+            segments_data = json.loads(item.get("audio_segments_json", "[]"))
             audio_segments = [
                 AudioSegment(
                     id=seg["id"],
                     script_segment_id=seg["script_segment_id"],
                     audio_url=seg["audio_url"],
-                    duration=seg["duration"],
-                    start_time=seg["start_time"],
-                    end_time=seg["end_time"],
+                    duration=float(seg["duration"]),
+                    start_time=float(seg["start_time"]),
+                    end_time=float(seg["end_time"]),
                 )
-                for seg in aw_data.get("audio_segments", [])
+                for seg in segments_data
             ]
 
-            audio_walkthroughs[aw_id] = AudioWalkthrough(
-                id=aw_data["id"],
-                walkthrough_script_id=aw_data["walkthrough_script_id"],
-                file_path=aw_data["file_path"],
+            audio_walkthroughs[item["id"]] = AudioWalkthrough(
+                id=item["id"],
+                walkthrough_script_id=item["walkthrough_script_id"],
+                file_path=item["file_path"],
                 audio_segments=audio_segments,
-                full_audio_url=aw_data.get("full_audio_url"),
-                total_duration=aw_data.get("total_duration", 0),
+                full_audio_url=item.get("full_audio_url") or None,
+                total_duration=float(item.get("total_duration", 0)),
                 created_at=created_at,
             )
 
         return audio_walkthroughs
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            print(f"⚠️ DynamoDB table '{_table_name('audio_walkthroughs')}' not found.")
+        else:
+            print(f"Error loading audio walkthroughs: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading audio walkthroughs: {e}")
         return {}
 
 
+# ---------------------------------------------------------------------------
+# Audio Bytes (S3)
+# ---------------------------------------------------------------------------
+
 def save_audio_bytes(audio_bytes_store: Dict[str, bytes]):
-    """Save audio bytes to individual files on disk"""
-    os.makedirs(AUDIO_BYTES_DIR, exist_ok=True)
-
-    # Write a manifest of which walkthrough IDs have audio
-    manifest = list(audio_bytes_store.keys())
-    with open(os.path.join(AUDIO_BYTES_DIR, "manifest.json"), "w") as f:
-        json.dump(manifest, f)
-
-    for wt_id, audio_data in audio_bytes_store.items():
-        audio_path = os.path.join(AUDIO_BYTES_DIR, f"{wt_id}.mp3")
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
+    """Save audio bytes to S3"""
+    try:
+        s3 = _get_s3_client()
+        for wt_id, audio_data in audio_bytes_store.items():
+            s3.put_object(
+                Bucket=settings.s3_audio_bucket,
+                Key=f"audio/{wt_id}.mp3",
+                Body=audio_data,
+                ContentType="audio/mpeg",
+            )
+    except Exception as e:
+        print(f"Error saving audio bytes to S3: {e}")
 
 
 def load_audio_bytes() -> Dict[str, bytes]:
-    """Load audio bytes from disk"""
-    manifest_path = os.path.join(AUDIO_BYTES_DIR, "manifest.json")
-    if not os.path.exists(manifest_path):
-        return {}
-
+    """Load audio bytes from S3"""
     try:
-        with open(manifest_path, "r") as f:
-            manifest = json.load(f)
-
+        s3 = _get_s3_client()
         audio_bytes_store: Dict[str, bytes] = {}
-        for wt_id in manifest:
-            audio_path = os.path.join(AUDIO_BYTES_DIR, f"{wt_id}.mp3")
-            if os.path.exists(audio_path):
-                with open(audio_path, "rb") as f:
-                    audio_bytes_store[wt_id] = f.read()
+
+        # List all audio files in the bucket
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=settings.s3_audio_bucket, Prefix="audio/"
+        ):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith(".mp3"):
+                    wt_id = key.replace("audio/", "").replace(".mp3", "")
+                    response = s3.get_object(
+                        Bucket=settings.s3_audio_bucket, Key=key
+                    )
+                    audio_bytes_store[wt_id] = response["Body"].read()
 
         return audio_bytes_store
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "NoSuchBucket":
+            print(f"⚠️ S3 bucket '{settings.s3_audio_bucket}' not found.")
+        else:
+            print(f"Error loading audio bytes from S3: {e}")
+        return {}
     except Exception as e:
-        print(f"Error loading audio bytes: {e}")
+        print(f"Error loading audio bytes from S3: {e}")
         return {}
 
 
 def delete_audio_bytes(walkthrough_id: str):
-    """Delete audio bytes file for a specific walkthrough"""
-    audio_path = os.path.join(AUDIO_BYTES_DIR, f"{walkthrough_id}.mp3")
-    if os.path.exists(audio_path):
-        os.remove(audio_path)
-
-    # Update manifest
-    manifest_path = os.path.join(AUDIO_BYTES_DIR, "manifest.json")
-    if os.path.exists(manifest_path):
-        try:
-            with open(manifest_path, "r") as f:
-                manifest = json.load(f)
-            manifest = [wid for wid in manifest if wid != walkthrough_id]
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f)
-        except Exception:
-            pass
+    """Delete audio bytes file for a specific walkthrough from S3"""
+    try:
+        s3 = _get_s3_client()
+        s3.delete_object(
+            Bucket=settings.s3_audio_bucket,
+            Key=f"audio/{walkthrough_id}.mp3",
+        )
+    except Exception as e:
+        print(f"Error deleting audio bytes from S3: {e}")
 
 
-# ============================================================
+# ---------------------------------------------------------------------------
 # Documentation Cache Persistence
-# ============================================================
+# ---------------------------------------------------------------------------
 
 def save_documentation_cache(docs_cache: Dict[str, Any]):
-    """Save documentation cache to file"""
-    ensure_persistence_dir()
+    """Save documentation cache to DynamoDB"""
+    try:
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("documentation_cache"))
 
-    with open(DOCS_CACHE_FILE, "w") as f:
-        json.dump(docs_cache, f, indent=2, default=str)
+        with table.batch_writer() as batch:
+            for repo_id, doc_data in docs_cache.items():
+                item = {
+                    "repo_id": repo_id,
+                    "data_json": json.dumps(doc_data, default=str),
+                }
+                batch.put_item(Item=item)
+    except Exception as e:
+        print(f"Error saving documentation cache to DynamoDB: {e}")
 
 
 def load_documentation_cache() -> Dict[str, Any]:
-    """Load documentation cache from file"""
-    if not os.path.exists(DOCS_CACHE_FILE):
-        return {}
-
+    """Load documentation cache from DynamoDB"""
     try:
-        with open(DOCS_CACHE_FILE, "r") as f:
-            return json.load(f)
+        dynamodb = _get_dynamodb_resource()
+        table = dynamodb.Table(_table_name("documentation_cache"))
+        response = table.scan()
+
+        docs_cache = {}
+        for item in response.get("Items", []):
+            docs_cache[item["repo_id"]] = json.loads(
+                item.get("data_json", "{}")
+            )
+
+        return docs_cache
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ResourceNotFoundException":
+            print(f"⚠️ DynamoDB table '{_table_name('documentation_cache')}' not found.")
+        else:
+            print(f"Error loading documentation cache: {e}")
+        return {}
     except Exception as e:
         print(f"Error loading documentation cache: {e}")
         return {}

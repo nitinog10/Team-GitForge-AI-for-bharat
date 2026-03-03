@@ -26,9 +26,9 @@ RUN pip install --no-cache-dir --upgrade pip \
 COPY . .
 
 # Create directories that the app expects
-RUN mkdir -p repos chroma_db
+RUN mkdir -p repos
 
-# Render injects PORT; default to 8000 for local Docker usage
+# AWS App Runner / ECS injects PORT; default to 8000 for local Docker usage
 ENV PORT=8000
 
 EXPOSE ${PORT}

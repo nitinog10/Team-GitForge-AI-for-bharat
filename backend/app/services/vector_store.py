@@ -1,18 +1,18 @@
 """
-Vector Store Service - ChromaDB Integration
+Vector Store Service - AWS DynamoDB Integration
 
-Layer 2: Logic Engine component for storing and retrieving code chunks
-using semantic similarity search.
+Layer 2: Logic Engine component for storing and retrieving code chunks.
+Uses DynamoDB for storage with metadata-based filtering.
 """
 
 import os
+import json
 from typing import List, Optional, Dict, Any
 import uuid
 
-# NumPy 2.0 removed np.float_ — patch it back for older chromadb versions
-import numpy as np
-if not hasattr(np, 'float_'):
-    np.float_ = np.float64
+import boto3
+from boto3.dynamodb.conditions import Key, Attr
+from botocore.exceptions import ClientError
 
 from app.config import get_settings
 from app.models.schemas import CodeChunk, NodeType
@@ -20,53 +20,60 @@ from app.models.schemas import CodeChunk, NodeType
 settings = get_settings()
 
 
+def _get_table_name():
+    """Get the DynamoDB table name for code chunks"""
+    return f"{settings.dynamodb_table_prefix}_code_chunks"
+
+
+def _get_dynamodb_resource():
+    """Get a boto3 DynamoDB resource"""
+    kwargs = {"region_name": settings.aws_region}
+    if settings.aws_access_key_id and settings.aws_secret_access_key:
+        kwargs["aws_access_key_id"] = settings.aws_access_key_id
+        kwargs["aws_secret_access_key"] = settings.aws_secret_access_key
+    return boto3.resource("dynamodb", **kwargs)
+
+
 class VectorStoreService:
     """
-    ChromaDB-based vector store for code embeddings.
+    DynamoDB-based store for code chunks.
     
     Enables:
-    - Semantic search across codebase
-    - Contextual retrieval for documentation
-    - Finding related code chunks
+    - Storage and retrieval of parsed code chunks
+    - Filtering by repository, file path, chunk type
+    - Contextual retrieval for documentation generation
     """
     
     def __init__(self):
-        self._client = None
-        self._collection = None
-        self._embedding_function = None
+        self._table = None
+        self._initialized = False
     
     def _initialize(self):
-        """Lazy initialization of ChromaDB"""
-        if self._client is not None:
+        """Lazy initialization of DynamoDB table reference"""
+        if self._initialized:
             return
         
         try:
-            import chromadb
-            from chromadb.config import Settings as ChromaSettings
-            
-            # Initialize persistent ChromaDB client
-            self._client = chromadb.PersistentClient(
-                path=settings.chroma_persist_directory,
-                settings=ChromaSettings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                )
-            )
-            
-            # Create or get the code collection
-            self._collection = self._client.get_or_create_collection(
-                name="docuverse_code",
-                metadata={"description": "Code chunks for DocuVerse"},
-            )
-            
-            print("✅ ChromaDB initialized successfully")
-            
-        except ImportError:
-            print("⚠️ ChromaDB not installed, using mock vector store")
-            self._client = "mock"
+            dynamodb = _get_dynamodb_resource()
+            self._table = dynamodb.Table(_get_table_name())
+            # Verify table exists by loading its metadata
+            self._table.load()
+            self._initialized = True
+            print("✅ DynamoDB code_chunks table connected successfully")
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code == "ResourceNotFoundException":
+                print(f"⚠️ DynamoDB table '{_get_table_name()}' not found. Using mock store.")
+                self._table = None
+                self._initialized = True
+            else:
+                print(f"⚠️ DynamoDB initialization failed: {e}")
+                self._table = None
+                self._initialized = True
         except Exception as e:
-            print(f"⚠️ ChromaDB initialization failed: {e}")
-            self._client = "mock"
+            print(f"⚠️ DynamoDB initialization failed: {e}")
+            self._table = None
+            self._initialized = True
     
     async def add_code_chunks(
         self, 
@@ -74,7 +81,7 @@ class VectorStoreService:
         repository_id: str
     ) -> int:
         """
-        Add code chunks to the vector store.
+        Add code chunks to DynamoDB.
         
         Args:
             chunks: List of CodeChunk objects to store
@@ -85,70 +92,45 @@ class VectorStoreService:
         """
         self._initialize()
         
-        if self._client == "mock":
+        if self._table is None:
             return len(chunks)
         
         try:
-            documents = []
-            metadatas = []
-            ids = []
+            added = 0
+            with self._table.batch_writer() as batch:
+                for chunk in chunks:
+                    # Sanitize metadata
+                    sanitized_meta: Dict[str, Any] = {}
+                    for k, v in chunk.metadata.items():
+                        if v is None:
+                            continue
+                        if isinstance(v, list):
+                            sanitized_meta[k] = ", ".join(str(i) for i in v)
+                        elif isinstance(v, (str, int, float, bool)):
+                            sanitized_meta[k] = v
+                        else:
+                            sanitized_meta[k] = str(v)
+                    
+                    item = {
+                        "repository_id": repository_id,
+                        "id": chunk.id,
+                        "file_path": chunk.file_path,
+                        "content": chunk.content,
+                        "start_line": chunk.start_line,
+                        "end_line": chunk.end_line,
+                        "chunk_type": chunk.chunk_type.value,
+                        "name": chunk.name or "",
+                        "metadata_json": json.dumps(sanitized_meta),
+                    }
+                    
+                    batch.put_item(Item=item)
+                    added += 1
             
-            for chunk in chunks:
-                # Create searchable document
-                doc = self._create_document(chunk)
-                documents.append(doc)
-                
-                # Create metadata
-                metadata = {
-                    "repository_id": repository_id,
-                    "file_path": chunk.file_path,
-                    "start_line": chunk.start_line,
-                    "end_line": chunk.end_line,
-                    "chunk_type": chunk.chunk_type.value,
-                    "name": chunk.name or "",
-                }
-                metadata.update(chunk.metadata)
-
-                # Sanitize metadata: ChromaDB only accepts str, int, float, bool
-                sanitized: Dict[str, Any] = {}
-                for k, v in metadata.items():
-                    if v is None:
-                        continue
-                    if isinstance(v, list):
-                        sanitized[k] = ", ".join(str(i) for i in v)
-                    elif isinstance(v, (str, int, float, bool)):
-                        sanitized[k] = v
-                    else:
-                        sanitized[k] = str(v)
-                metadatas.append(sanitized)
-                
-                ids.append(chunk.id)
-            
-            # Add to ChromaDB
-            self._collection.add(
-                documents=documents,
-                metadatas=metadatas,
-                ids=ids,
-            )
-            
-            return len(chunks)
+            return added
             
         except Exception as e:
-            print(f"Error adding chunks to vector store: {e}")
+            print(f"Error adding chunks to DynamoDB: {e}")
             return 0
-    
-    def _create_document(self, chunk: CodeChunk) -> str:
-        """Create a searchable document from a code chunk"""
-        parts = []
-        
-        if chunk.name:
-            parts.append(f"Name: {chunk.name}")
-        
-        parts.append(f"Type: {chunk.chunk_type.value}")
-        parts.append(f"File: {chunk.file_path}")
-        parts.append(f"Code:\n{chunk.content}")
-        
-        return "\n".join(parts)
     
     async def search(
         self,
@@ -159,10 +141,10 @@ class VectorStoreService:
         chunk_type: Optional[NodeType] = None,
     ) -> List[CodeChunk]:
         """
-        Search for relevant code chunks.
+        Search for relevant code chunks using metadata filters.
         
         Args:
-            query: Search query (natural language or code)
+            query: Search query (used for keyword matching in content/name)
             repository_id: Filter by repository
             file_path: Filter by file path
             n_results: Maximum number of results
@@ -173,53 +155,88 @@ class VectorStoreService:
         """
         self._initialize()
         
-        if self._client == "mock":
+        if self._table is None:
             return []
         
         try:
-            # Build filter conditions
-            where = {}
+            # Build the query/scan
             if repository_id:
-                where["repository_id"] = repository_id
-            if file_path:
-                where["file_path"] = file_path
-            if chunk_type:
-                where["chunk_type"] = chunk_type.value
-            
-            # Query ChromaDB
-            results = self._collection.query(
-                query_texts=[query],
-                n_results=n_results,
-                where=where if where else None,
-            )
+                # Use query on partition key
+                key_condition = Key("repository_id").eq(repository_id)
+                filter_expression = None
+                
+                if file_path:
+                    filter_expression = Attr("file_path").eq(file_path)
+                if chunk_type:
+                    ct_filter = Attr("chunk_type").eq(chunk_type.value)
+                    filter_expression = (
+                        ct_filter if filter_expression is None
+                        else filter_expression & ct_filter
+                    )
+                
+                # Add keyword filter on content or name
+                if query:
+                    query_lower = query.lower()
+                    kw_filter = Attr("name").contains(query_lower) | Attr("content").contains(query_lower)
+                    filter_expression = (
+                        kw_filter if filter_expression is None
+                        else filter_expression & kw_filter
+                    )
+                
+                kwargs = {
+                    "KeyConditionExpression": key_condition,
+                    "Limit": n_results,
+                }
+                if filter_expression:
+                    kwargs["FilterExpression"] = filter_expression
+                
+                response = self._table.query(**kwargs)
+            else:
+                # Full table scan with filters (less efficient)
+                filter_expression = None
+                
+                if file_path:
+                    filter_expression = Attr("file_path").eq(file_path)
+                if chunk_type:
+                    ct_filter = Attr("chunk_type").eq(chunk_type.value)
+                    filter_expression = (
+                        ct_filter if filter_expression is None
+                        else filter_expression & ct_filter
+                    )
+                if query:
+                    query_lower = query.lower()
+                    kw_filter = Attr("name").contains(query_lower) | Attr("content").contains(query_lower)
+                    filter_expression = (
+                        kw_filter if filter_expression is None
+                        else filter_expression & kw_filter
+                    )
+                
+                kwargs = {"Limit": n_results}
+                if filter_expression:
+                    kwargs["FilterExpression"] = filter_expression
+                
+                response = self._table.scan(**kwargs)
             
             # Convert results to CodeChunk objects
             chunks = []
-            if results and results["ids"] and results["ids"][0]:
-                for i, id in enumerate(results["ids"][0]):
-                    metadata = results["metadatas"][0][i]
-                    document = results["documents"][0][i]
-                    
-                    # Extract code from document
-                    code_start = document.find("Code:\n")
-                    code = document[code_start + 6:] if code_start != -1 else document
-                    
-                    chunk = CodeChunk(
-                        id=id,
-                        file_path=metadata.get("file_path", ""),
-                        content=code,
-                        start_line=metadata.get("start_line", 0),
-                        end_line=metadata.get("end_line", 0),
-                        chunk_type=NodeType(metadata.get("chunk_type", "function")),
-                        name=metadata.get("name"),
-                        metadata=metadata,
-                    )
-                    chunks.append(chunk)
+            for item in response.get("Items", []):
+                metadata = json.loads(item.get("metadata_json", "{}"))
+                chunk = CodeChunk(
+                    id=item["id"],
+                    file_path=item.get("file_path", ""),
+                    content=item.get("content", ""),
+                    start_line=int(item.get("start_line", 0)),
+                    end_line=int(item.get("end_line", 0)),
+                    chunk_type=NodeType(item.get("chunk_type", "function")),
+                    name=item.get("name") or None,
+                    metadata=metadata,
+                )
+                chunks.append(chunk)
             
-            return chunks
+            return chunks[:n_results]
             
         except Exception as e:
-            print(f"Error searching vector store: {e}")
+            print(f"Error searching DynamoDB: {e}")
             return []
     
     async def get_related_chunks(
@@ -230,57 +247,40 @@ class VectorStoreService:
     ) -> List[CodeChunk]:
         """
         Find chunks related to a given chunk.
-        
-        Uses the content of the specified chunk to find similar code.
+        Returns chunks from the same repository, excluding the source chunk.
         """
         self._initialize()
         
-        if self._client == "mock":
+        if self._table is None:
             return []
         
         try:
-            # Get the source chunk
-            result = self._collection.get(ids=[chunk_id])
-            
-            if not result or not result["documents"]:
-                return []
-            
-            source_doc = result["documents"][0]
-            
-            # Search for similar chunks (excluding the source)
-            results = self._collection.query(
-                query_texts=[source_doc],
-                n_results=n_results + 1,  # +1 to account for self-match
-                where={"repository_id": repository_id},
+            # Query chunks from the same repository
+            response = self._table.query(
+                KeyConditionExpression=Key("repository_id").eq(repository_id),
+                Limit=n_results + 1,
             )
             
-            # Filter out the source chunk and convert to CodeChunk
             chunks = []
-            if results and results["ids"] and results["ids"][0]:
-                for i, id in enumerate(results["ids"][0]):
-                    if id == chunk_id:
-                        continue
-                    
-                    metadata = results["metadatas"][0][i]
-                    document = results["documents"][0][i]
-                    
-                    code_start = document.find("Code:\n")
-                    code = document[code_start + 6:] if code_start != -1 else document
-                    
-                    chunk = CodeChunk(
-                        id=id,
-                        file_path=metadata.get("file_path", ""),
-                        content=code,
-                        start_line=metadata.get("start_line", 0),
-                        end_line=metadata.get("end_line", 0),
-                        chunk_type=NodeType(metadata.get("chunk_type", "function")),
-                        name=metadata.get("name"),
-                        metadata=metadata,
-                    )
-                    chunks.append(chunk)
-                    
-                    if len(chunks) >= n_results:
-                        break
+            for item in response.get("Items", []):
+                if item["id"] == chunk_id:
+                    continue
+                
+                metadata = json.loads(item.get("metadata_json", "{}"))
+                chunk = CodeChunk(
+                    id=item["id"],
+                    file_path=item.get("file_path", ""),
+                    content=item.get("content", ""),
+                    start_line=int(item.get("start_line", 0)),
+                    end_line=int(item.get("end_line", 0)),
+                    chunk_type=NodeType(item.get("chunk_type", "function")),
+                    name=item.get("name") or None,
+                    metadata=metadata,
+                )
+                chunks.append(chunk)
+                
+                if len(chunks) >= n_results:
+                    break
             
             return chunks
             
@@ -292,17 +292,41 @@ class VectorStoreService:
         """Delete all chunks for a repository"""
         self._initialize()
         
-        if self._client == "mock":
+        if self._table is None:
             return True
         
         try:
-            # Get all chunk IDs for this repository
-            results = self._collection.get(
-                where={"repository_id": repository_id}
+            # Query all chunk IDs for this repository
+            response = self._table.query(
+                KeyConditionExpression=Key("repository_id").eq(repository_id),
+                ProjectionExpression="repository_id, id",
             )
             
-            if results and results["ids"]:
-                self._collection.delete(ids=results["ids"])
+            # Batch delete
+            with self._table.batch_writer() as batch:
+                for item in response.get("Items", []):
+                    batch.delete_item(
+                        Key={
+                            "repository_id": item["repository_id"],
+                            "id": item["id"],
+                        }
+                    )
+            
+            # Handle pagination
+            while response.get("LastEvaluatedKey"):
+                response = self._table.query(
+                    KeyConditionExpression=Key("repository_id").eq(repository_id),
+                    ProjectionExpression="repository_id, id",
+                    ExclusiveStartKey=response["LastEvaluatedKey"],
+                )
+                with self._table.batch_writer() as batch:
+                    for item in response.get("Items", []):
+                        batch.delete_item(
+                            Key={
+                                "repository_id": item["repository_id"],
+                                "id": item["id"],
+                            }
+                        )
             
             return True
             
@@ -317,65 +341,59 @@ class VectorStoreService:
     ) -> List[CodeChunk]:
         """
         Get all chunks for a file plus related context from dependencies.
-        
-        This is used for Contextual RAG - when documenting a file,
-        we retrieve its dependencies to provide better context.
         """
         self._initialize()
         
-        if self._client == "mock":
+        if self._table is None:
             return []
         
         try:
             # Get chunks from the file itself
-            file_results = self._collection.get(
-                where={
-                    "$and": [
-                        {"repository_id": repository_id},
-                        {"file_path": file_path},
-                    ]
-                }
+            response = self._table.query(
+                KeyConditionExpression=Key("repository_id").eq(repository_id),
+                FilterExpression=Attr("file_path").eq(file_path),
             )
             
             chunks = []
-            if file_results and file_results["ids"]:
-                for i, id in enumerate(file_results["ids"]):
-                    metadata = file_results["metadatas"][i]
-                    document = file_results["documents"][i]
-                    
-                    code_start = document.find("Code:\n")
-                    code = document[code_start + 6:] if code_start != -1 else document
-                    
+            for item in response.get("Items", []):
+                metadata = json.loads(item.get("metadata_json", "{}"))
+                chunk = CodeChunk(
+                    id=item["id"],
+                    file_path=item.get("file_path", ""),
+                    content=item.get("content", ""),
+                    start_line=int(item.get("start_line", 0)),
+                    end_line=int(item.get("end_line", 0)),
+                    chunk_type=NodeType(item.get("chunk_type", "function")),
+                    name=item.get("name") or None,
+                    metadata=metadata,
+                )
+                chunks.append(chunk)
+            
+            # Get a few related chunks from other files in the same repo
+            if chunks:
+                related_response = self._table.query(
+                    KeyConditionExpression=Key("repository_id").eq(repository_id),
+                    FilterExpression=Attr("file_path").ne(file_path),
+                    Limit=5,
+                )
+                
+                for item in related_response.get("Items", []):
+                    metadata = json.loads(item.get("metadata_json", "{}"))
+                    metadata["is_context"] = True
                     chunk = CodeChunk(
-                        id=id,
-                        file_path=metadata.get("file_path", ""),
-                        content=code,
-                        start_line=metadata.get("start_line", 0),
-                        end_line=metadata.get("end_line", 0),
-                        chunk_type=NodeType(metadata.get("chunk_type", "function")),
-                        name=metadata.get("name"),
+                        id=item["id"],
+                        file_path=item.get("file_path", ""),
+                        content=item.get("content", ""),
+                        start_line=int(item.get("start_line", 0)),
+                        end_line=int(item.get("end_line", 0)),
+                        chunk_type=NodeType(item.get("chunk_type", "function")),
+                        name=item.get("name") or None,
                         metadata=metadata,
                     )
                     chunks.append(chunk)
-            
-            # Search for related context from other files
-            file_content = " ".join(c.content for c in chunks[:3])  # Use first few chunks
-            if file_content:
-                related = await self.search(
-                    query=file_content[:1000],  # Limit query size
-                    repository_id=repository_id,
-                    n_results=5,
-                )
-                
-                # Add related chunks that aren't from the same file
-                for chunk in related:
-                    if chunk.file_path != file_path:
-                        chunk.metadata["is_context"] = True
-                        chunks.append(chunk)
             
             return chunks
             
         except Exception as e:
             print(f"Error getting file context: {e}")
             return []
-

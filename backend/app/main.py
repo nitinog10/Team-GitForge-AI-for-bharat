@@ -56,14 +56,9 @@ def create_app() -> FastAPI:
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://docuverse-ai-y1za.vercel.app",
         settings.frontend_url,
     ]
-    # Render sets RENDER_EXTERNAL_URL automatically
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "")
-    if render_url:
-        allowed_origins.append(render_url)
-    # Also allow any Vercel preview deployments
+    # Allow any Netlify preview/production deployments
     extra_origins = os.getenv("EXTRA_CORS_ORIGINS", "")
     if extra_origins:
         allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
@@ -116,4 +111,3 @@ if __name__ == "__main__":
         port=settings.port,
         reload=settings.debug
     )
-

@@ -60,10 +60,6 @@ htmlcov/
 *.tmp
 .cache/
 
-# ChromaDB
-chroma_data/
-chroma_db/
-
 # Repos (cloned repositories for analysis)
 backend/repos/
 

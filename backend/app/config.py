@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # GitHub OAuth
     github_client_id: str = ""
     github_client_secret: str = ""
-    github_redirect_uri: str = "https://docuverse-ai-y1za.vercel.app/api/auth/callback/github"
+    github_redirect_uri: str = "http://localhost:3000/api/auth/callback/github"
     
     # OpenAI
     openai_api_key: str = ""
@@ -32,14 +32,18 @@ class Settings(BaseSettings):
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Rachel voice
     elevenlabs_model_id: str = "eleven_multilingual_v2"
     
-    # ChromaDB
-    chroma_persist_directory: str = "./chroma_db"
+    # AWS Configuration
+    aws_region: str = "ap-south-1"
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    dynamodb_table_prefix: str = "docusense"
+    s3_audio_bucket: str = "docusense-audio"
     
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     
     # Frontend
-    frontend_url: str = "https://docuverse-ai-y1za.vercel.app"
+    frontend_url: str = "http://localhost:3000"
     
     # Repository Storage
     repos_directory: str = "./repos"
@@ -54,4 +58,3 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance"""
     return Settings()
-
