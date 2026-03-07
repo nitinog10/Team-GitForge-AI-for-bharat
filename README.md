@@ -771,7 +771,7 @@ This project is built for hackathon demonstration purposes.
 
 <div align="center">
 
-**Built with ❤️ by Team BitMask**
+**Built with ❤️ by Team GitForge**
 
 *Transforming the way developers understand code — one walkthrough at a time.*
 
