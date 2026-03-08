@@ -39,14 +39,14 @@ export function Sidebar() {
 
   if (!mounted) {
     return (
-      <aside className="h-screen w-[260px] bg-dv-surface/60 backdrop-blur-ios border-r border-dv-border flex flex-col" />
+      <aside className="h-screen w-[260px] bg-dv-surface/60 backdrop-blur-ios border-r border-dv-border flex flex-col sticky top-0" />
     )
   }
 
   return (
     <aside
       className={clsx(
-        'h-screen bg-dv-surface/60 backdrop-blur-ios border-r border-dv-border flex flex-col transition-all duration-300 relative group/sidebar',
+        'h-screen sticky top-0 bg-dv-surface/60 backdrop-blur-ios border-r border-dv-border flex flex-col transition-all duration-300 relative group/sidebar',
         isCollapsed ? 'w-[72px]' : 'w-[260px]'
       )}
     >
