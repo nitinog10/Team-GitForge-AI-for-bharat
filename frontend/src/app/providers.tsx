@@ -31,8 +31,18 @@ function ThemeSync() {
     root.classList.toggle('light', effective === 'light')
     root.setAttribute('data-theme', effective)
 
-    // Accent color CSS variable
-    root.style.setProperty('--accent-color', accentColor)
+    // Convert hex accent color to RGB and set --dv-accent
+    const hex = accentColor.replace('#', '')
+    const r = parseInt(hex.substring(0, 2), 16)
+    const g = parseInt(hex.substring(2, 4), 16)
+    const b = parseInt(hex.substring(4, 6), 16)
+    root.style.setProperty('--dv-accent', `${r} ${g} ${b}`)
+    // Lighten for hover variant
+    const rH = Math.min(255, r + 40)
+    const gH = Math.min(255, g + 30)
+    const bH = Math.min(255, b + 20)
+    root.style.setProperty('--dv-accent-hover', `${rH} ${gH} ${bH}`)
+    root.style.setProperty('--dv-accent-subtle', `rgba(${r},${g},${b},0.12)`)
 
     // Font size class
     root.classList.toggle('text-sm-ui', fontSize === 'small')

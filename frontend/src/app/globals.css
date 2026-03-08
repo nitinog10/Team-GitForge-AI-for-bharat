@@ -159,6 +159,19 @@
   ::selection {
     background: var(--selection-bg);
   }
+
+  /* Font size variants */
+  html.text-sm-ui { font-size: 14px; }
+  html.text-lg-ui { font-size: 18px; }
+
+  /* Reduced motion */
+  html.reduce-motion *,
+  html.reduce-motion *::before,
+  html.reduce-motion *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @layer components {

@@ -4,10 +4,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   User,
-  Bell,
   Palette,
-  Volume2,
-  Shield,
   CreditCard,
   LogOut,
   ChevronRight,
@@ -16,7 +13,6 @@ import {
   Monitor,
   Check,
   Sparkles,
-  Settings,
   Type,
   Eye,
 } from 'lucide-react'
@@ -26,13 +22,6 @@ import { useUserStore, useUIStore, type ThemeMode, type AccentColor, type FontSi
 import { auth } from '@/lib/api'
 
 const ease = [0.25, 0.1, 0.25, 1] as const
-
-const voiceOptions = [
-  { id: 'rachel', name: 'Rachel', description: 'Default female voice', color: '#0a84ff' },
-  { id: 'antoni', name: 'Antoni', description: 'Technical male voice', color: '#bf5af2' },
-  { id: 'bella', name: 'Bella', description: 'Young female voice', color: '#ff9f0a' },
-  { id: 'josh', name: 'Josh', description: 'Deep male voice', color: '#30d158' },
-]
 
 const accentOptions: { color: AccentColor; label: string }[] = [
   { color: '#0a84ff', label: 'Blue' },
@@ -67,16 +56,7 @@ export default function SettingsPage() {
   const reducedMotion = useUIStore((s) => s.reducedMotion)
   const setReducedMotion = useUIStore((s) => s.setReducedMotion)
 
-  // Local settings (non-persisted for now)
-  const [settings, setSettings] = useState({
-    voice: 'rachel',
-    playbackSpeed: 1,
-    autoPlay: true,
-    showTranscript: true,
-    emailNotifications: true,
-    walkthroughComplete: true,
-    weeklyDigest: false,
-  })
+
 
   useEffect(() => { setMounted(true) }, [])
 
@@ -94,16 +74,9 @@ export default function SettingsPage() {
     }
   }, [token, user, setUser])
 
-  const updateSetting = (key: string, value: string | number | boolean) => {
-    setSettings(prev => ({ ...prev, [key]: value }))
-  }
-
   const sections = [
     { id: 'account', label: 'Account', icon: User },
     { id: 'appearance', label: 'Appearance', icon: Palette },
-    { id: 'audio', label: 'Audio & Playback', icon: Volume2 },
-    { id: 'notifications', label: 'Notifications', icon: Bell },
-    { id: 'security', label: 'Security', icon: Shield },
     { id: 'billing', label: 'Billing', icon: CreditCard },
   ]
 
@@ -420,180 +393,6 @@ export default function SettingsPage() {
                       checked={reducedMotion}
                       onChange={setReducedMotion}
                     />
-                  </div>
-                </motion.div>
-              )}
-
-              {/* ════════ AUDIO & PLAYBACK ════════ */}
-              {activeSection === 'audio' && (
-                <motion.div
-                  key="audio"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.3, ease }}
-                  className="space-y-5"
-                >
-                  <div className="rounded-2xl bg-[var(--glass-3)] backdrop-blur-2xl border border-dv-border p-6 shadow-[var(--inset)]">
-                    <h2 className="text-[18px] font-semibold tracking-[-0.02em] mb-5">Voice Selection</h2>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      {voiceOptions.map((voice) => {
-                        const isSelected = settings.voice === voice.id
-                        return (
-                          <button
-                            key={voice.id}
-                            onClick={() => updateSetting('voice', voice.id)}
-                            className={`relative p-4 rounded-xl border text-left transition-all active:scale-[0.97] ${
-                              isSelected
-                                ? 'border-dv-accent/40 bg-dv-accent/8'
-                                : 'border-dv-border bg-[var(--glass-3)] hover:bg-[var(--glass-5)]'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between mb-2.5">
-                              <div
-                                className="w-8 h-8 rounded-full flex items-center justify-center"
-                                style={{ backgroundColor: `${voice.color}20` }}
-                              >
-                                <Volume2 className="w-3.5 h-3.5" style={{ color: voice.color }} />
-                              </div>
-                              {isSelected && (
-                                <motion.div
-                                  layoutId="voice-check"
-                                  className="w-5 h-5 rounded-full bg-dv-accent flex items-center justify-center"
-                                  transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-                                >
-                                  <Check className="w-3 h-3 text-white" />
-                                </motion.div>
-                              )}
-                            </div>
-                            <p className="text-[14px] font-semibold">{voice.name}</p>
-                            <p className="text-[11px] text-dv-text/25 mt-0.5">{voice.description}</p>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl bg-[var(--glass-3)] backdrop-blur-2xl border border-dv-border p-6 shadow-[var(--inset)]">
-                    <h2 className="text-[18px] font-semibold tracking-[-0.02em] mb-5">Playback Settings</h2>
-
-                    <div className="space-y-6">
-                      {/* Speed slider */}
-                      <div>
-                        <div className="flex items-center justify-between mb-3">
-                          <label className="text-[14px] font-medium">Default Playback Speed</label>
-                          <span className="text-[12px] font-bold text-dv-accent bg-dv-accent/10 px-2.5 py-0.5 rounded-full">
-                            {settings.playbackSpeed}x
-                          </span>
-                        </div>
-                        <input
-                          type="range"
-                          min="0.5"
-                          max="2"
-                          step="0.25"
-                          value={settings.playbackSpeed}
-                          onChange={(e) => updateSetting('playbackSpeed', parseFloat(e.target.value))}
-                          className="w-full h-1 bg-[var(--glass-8)] rounded-full appearance-none cursor-pointer
-                            [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5
-                            [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-[0_2px_8px_rgba(0,0,0,0.4)]"
-                        />
-                        <div className="flex justify-between mt-1.5">
-                          <span className="text-[11px] text-dv-text/20">0.5x</span>
-                          <span className="text-[11px] text-dv-text/20">2x</span>
-                        </div>
-                      </div>
-
-                      <div className="h-px bg-[var(--glass-4)]" />
-
-                      <IOSToggle
-                        label="Auto-play next segment"
-                        description="Automatically continue to the next code section"
-                        checked={settings.autoPlay}
-                        onChange={(v) => updateSetting('autoPlay', v)}
-                      />
-
-                      <IOSToggle
-                        label="Show transcript"
-                        description="Display narration text during playback"
-                        checked={settings.showTranscript}
-                        onChange={(v) => updateSetting('showTranscript', v)}
-                      />
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-
-              {/* ════════ NOTIFICATIONS ════════ */}
-              {activeSection === 'notifications' && (
-                <motion.div
-                  key="notifications"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.3, ease }}
-                >
-                  <div className="rounded-2xl bg-[var(--glass-3)] backdrop-blur-2xl border border-dv-border p-6 shadow-[var(--inset)]">
-                    <h2 className="text-[18px] font-semibold tracking-[-0.02em] mb-6">Notifications</h2>
-
-                    <div className="space-y-1">
-                      <IOSToggle
-                        label="Email notifications"
-                        description="Receive updates via email"
-                        checked={settings.emailNotifications}
-                        onChange={(v) => updateSetting('emailNotifications', v)}
-                      />
-                      <div className="h-px bg-[var(--glass-4)] my-4" />
-                      <IOSToggle
-                        label="Walkthrough complete"
-                        description="Notify when walkthrough generation finishes"
-                        checked={settings.walkthroughComplete}
-                        onChange={(v) => updateSetting('walkthroughComplete', v)}
-                      />
-                      <div className="h-px bg-[var(--glass-4)] my-4" />
-                      <IOSToggle
-                        label="Weekly digest"
-                        description="Get a summary of your activity"
-                        checked={settings.weeklyDigest}
-                        onChange={(v) => updateSetting('weeklyDigest', v)}
-                      />
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-
-              {/* ════════ SECURITY ════════ */}
-              {activeSection === 'security' && (
-                <motion.div
-                  key="security"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.3, ease }}
-                >
-                  <div className="rounded-2xl bg-[var(--glass-3)] backdrop-blur-2xl border border-dv-border overflow-hidden shadow-[var(--inset)]">
-                    <div className="px-6 pt-6 pb-4">
-                      <h2 className="text-[18px] font-semibold tracking-[-0.02em]">Security</h2>
-                    </div>
-
-                    {[
-                      { title: 'Two-factor authentication', desc: 'Add an extra layer of security' },
-                      { title: 'Active sessions', desc: 'Manage your logged-in devices' },
-                      { title: 'API tokens', desc: 'Manage access tokens' },
-                    ].map((item, i, arr) => (
-                      <button
-                        key={item.title}
-                        className={`w-full flex items-center justify-between px-6 py-4 hover:bg-[var(--glass-3)] transition-all active:scale-[0.99] ${
-                          i < arr.length - 1 ? 'border-b border-dv-border-subtle' : ''
-                        }`}
-                      >
-                        <div className="text-left">
-                          <p className="text-[14px] font-medium">{item.title}</p>
-                          <p className="text-[12px] text-dv-text/25 mt-0.5">{item.desc}</p>
-                        </div>
-                        <ChevronRight className="w-4 h-4 text-dv-text/20 flex-shrink-0 ml-3" />
-                      </button>
-                    ))}
                   </div>
                 </motion.div>
               )}
