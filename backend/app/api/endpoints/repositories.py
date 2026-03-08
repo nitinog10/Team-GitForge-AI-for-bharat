@@ -160,8 +160,21 @@ async def _ensure_repo_cloned(repo: Repository, access_token: str) -> bool:
     if repo.local_path and os.path.exists(repo.local_path):
         return True
     
+    # Preserve original timestamps — re-clone should not reset them
+    original_indexed_at = repo.indexed_at
+    original_created_at = repo.created_at
+    
     print(f"🔄 Re-cloning {repo.full_name} (local files missing)...")
     await clone_repository(repo, access_token)
+    
+    # Restore original timestamps after re-clone + auto-index
+    if original_indexed_at:
+        repo.indexed_at = original_indexed_at
+    if original_created_at:
+        repo.created_at = original_created_at
+    repositories_db[repo.id] = repo
+    save_repositories(repositories_db)
+    
     return repo.local_path is not None and os.path.exists(repo.local_path)
 
 
