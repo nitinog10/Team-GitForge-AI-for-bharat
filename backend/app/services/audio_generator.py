@@ -10,7 +10,12 @@ import io
 import time
 from typing import Optional, AsyncIterator, List
 
-import edge_tts
+try:
+    import edge_tts
+    _HAS_EDGE_TTS = True
+except ImportError:
+    _HAS_EDGE_TTS = False
+
 import httpx
 
 from app.config import get_settings
@@ -44,6 +49,9 @@ class AudioGeneratorService:
 
     async def _generate_edge_tts(self, text: str) -> bytes:
         """Generate MP3 audio via Microsoft Edge-TTS (free)."""
+        if not _HAS_EDGE_TTS:
+            print("⚠️  edge-tts package not installed – cannot generate audio")
+            return b""
         communicate = edge_tts.Communicate(text, EDGE_TTS_VOICE)
         buf = io.BytesIO()
         async for chunk in communicate.stream():
@@ -198,6 +206,8 @@ class AudioGeneratorService:
                 print(f"⚠️  ElevenLabs streaming error: {e}")
 
         # Fallback: Edge-TTS streaming
+        if not _HAS_EDGE_TTS:
+            return
         try:
             communicate = edge_tts.Communicate(text, EDGE_TTS_VOICE)
             async for chunk in communicate.stream():
