@@ -20,7 +20,7 @@ from app.models.schemas import (
     NodeType,
 )
 from app.api.endpoints.auth import get_current_user
-from app.api.endpoints.repositories import repositories_db, should_ignore
+from app.api.endpoints.repositories import repositories_db, should_ignore, _ensure_repo_cloned
 
 router = APIRouter()
 settings = get_settings()
@@ -493,7 +493,15 @@ async def get_file_tree(repo_id: str, authorization: str = Header(None)):
         raise HTTPException(status_code=404, detail="Repository not found")
     
     if not repo.local_path or not os.path.exists(repo.local_path):
-        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+        # Trigger re-clone for GitHub repos (uploaded repos can't be recovered)
+        if repo.source != "upload" and repo.clone_url:
+            try:
+                await _ensure_repo_cloned(repo, user.access_token)
+            except Exception:
+                pass
+        # If files still don't exist, return empty tree instead of 400
+        if not repo.local_path or not os.path.exists(repo.local_path):
+            return []
     
     return build_file_tree(repo.local_path)
 
@@ -516,7 +524,17 @@ async def get_file_content(
         raise HTTPException(status_code=404, detail="Repository not found")
     
     if not repo.local_path:
-        raise HTTPException(status_code=400, detail="Repository not cloned yet")
+        raise HTTPException(status_code=400, detail="Repository files unavailable")
+    
+    if not os.path.exists(repo.local_path):
+        # Try re-clone for GitHub repos
+        if repo.source != "upload" and repo.clone_url:
+            try:
+                await _ensure_repo_cloned(repo, user.access_token)
+            except Exception:
+                pass
+        if not os.path.exists(repo.local_path):
+            raise HTTPException(status_code=400, detail="Repository files unavailable")
     
     # Sanitize path to prevent directory traversal
     safe_path = os.path.normpath(path).lstrip(os.sep).lstrip("/")

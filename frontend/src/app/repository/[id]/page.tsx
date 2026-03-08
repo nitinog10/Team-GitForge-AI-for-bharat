@@ -92,6 +92,14 @@ export default function RepositoryPage({ params }: { params: { id: string } }) {
     return () => clearInterval(interval)
   }, [repo, params.id, fetchFiles])
 
+  // Poll for files when repo is indexed but file tree is empty (re-clone in progress)
+  useEffect(() => {
+    if (!repo || !repo.is_indexed || fileTree.length > 0 || isFilesLoading) return
+
+    const interval = setInterval(() => fetchFiles(), 6000)
+    return () => clearInterval(interval)
+  }, [repo, fileTree.length, isFilesLoading, fetchFiles])
+
   const handleReindex = async () => {
     setIsReindexing(true)
     try {
