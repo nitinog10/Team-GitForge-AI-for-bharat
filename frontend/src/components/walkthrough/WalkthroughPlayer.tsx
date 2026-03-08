@@ -98,6 +98,7 @@ export function WalkthroughPlayer({
   const [audioBlobUrl, setAudioBlobUrl] = useState<string | null>(null)
   const [segmentTimings, setSegmentTimings] = useState<AudioSegmentTiming[]>([])
   const [displayTime, setDisplayTime] = useState(0)
+  const [audioRetryCount, setAudioRetryCount] = useState(0)
 
   // ── Refs ────────────────────────────────────────────────────────────────
   const codeContainerRef = useRef<HTMLDivElement>(null)
@@ -211,11 +212,30 @@ export function WalkthroughPlayer({
 
     // Start polling after a short delay (give backend time to start generating)
     setAudioLoading(true)
+    setAudioError(null)
+    setAudioReady(false)
+    if (audioBlobUrl) {
+      URL.revokeObjectURL(audioBlobUrl)
+      setAudioBlobUrl(null)
+    }
     pollTimer = setTimeout(fetchAudio, 2000)
     return () => {
       cancelled = true
       if (pollTimer) clearTimeout(pollTimer)
     }
+  }, [script.id, audioRetryCount])
+
+  /** Retry audio generation – calls backend regenerate endpoint, then re-polls */
+  const retryAudio = useCallback(async () => {
+    const token = getAuthToken()
+    if (!token) return
+    try {
+      await fetch(`${API_BASE_URL}/walkthroughs/${script.id}/audio/regenerate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch { /* ignore – polling will pick up status */ }
+    setAudioRetryCount((c) => c + 1)
   }, [script.id])
 
   // Clean up blob URL on unmount
@@ -408,7 +428,13 @@ export function WalkthroughPlayer({
       )}
       {audioError && (
         <div className="flex items-center gap-2 px-4 py-1.5 bg-dv-error/8 border-b border-dv-border-subtle ios-caption2 text-dv-error">
-          ⚠️ {audioError}
+          <span>⚠️ {audioError}</span>
+          <button
+            onClick={retryAudio}
+            className="ml-auto px-3 py-1 rounded-[8px] bg-dv-accent/15 text-dv-accent text-xs font-medium hover:bg-dv-accent/25 transition-colors"
+          >
+            Retry Audio
+          </button>
         </div>
       )}
 

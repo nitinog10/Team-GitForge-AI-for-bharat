@@ -36,6 +36,7 @@ walkthroughs_db: dict[str, WalkthroughScript] = load_walkthroughs()
 audio_walkthroughs_db: dict[str, AudioWalkthrough] = load_audio_walkthroughs()
 audio_bytes_store: dict[str, bytes] = load_audio_bytes()
 audio_failed: dict[str, str] = {}  # walkthrough_id → error message
+audio_generating: set[str] = set()  # walkthrough IDs currently being generated
 print(f"📂 Loaded {len(walkthroughs_db)} walkthroughs, {len(audio_walkthroughs_db)} audio records from disk")
 
 
@@ -157,7 +158,15 @@ async def get_walkthrough_audio(walkthrough_id: str, authorization: str = Header
     has_bytes = bool(audio_bytes_store.get(walkthrough_id))
 
     if not audio or not has_bytes:
-        # Audio is still being generated
+        # If no background task is running, auto-trigger audio generation
+        if walkthrough_id not in audio_generating:
+            print(f"🔄 Auto-triggering audio generation for stale walkthrough {walkthrough_id}")
+            from fastapi import BackgroundTasks as BT
+            import asyncio
+            audio_generating.add(walkthrough_id)
+            # Run audio generation in background
+            asyncio.ensure_future(generate_audio_for_walkthrough(walkthrough_id))
+
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=202,
@@ -214,6 +223,35 @@ async def stream_walkthrough_audio(walkthrough_id: str, authorization: str = Hea
             "Content-Length": str(len(all_bytes)),
         },
     )
+
+
+@router.post("/{walkthrough_id}/audio/regenerate")
+async def regenerate_audio(walkthrough_id: str, authorization: str = Header(None)):
+    """Re-trigger audio generation for an existing walkthrough (clears old state)."""
+    user = await get_current_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    walkthrough = walkthroughs_db.get(walkthrough_id)
+    if not walkthrough:
+        raise HTTPException(status_code=404, detail="Walkthrough not found")
+
+    # Clear old audio state
+    audio_failed.pop(walkthrough_id, None)
+    if walkthrough_id in audio_walkthroughs_db:
+        del audio_walkthroughs_db[walkthrough_id]
+        save_audio_walkthroughs(audio_walkthroughs_db)
+    if walkthrough_id in audio_bytes_store:
+        del audio_bytes_store[walkthrough_id]
+        delete_audio_bytes(walkthrough_id)
+    audio_generating.discard(walkthrough_id)
+
+    # Re-trigger audio generation
+    import asyncio
+    audio_generating.add(walkthrough_id)
+    asyncio.ensure_future(generate_audio_for_walkthrough(walkthrough_id))
+
+    return APIResponse(success=True, message="Audio regeneration started")
 
 
 @router.get("/file/{repo_id}")
@@ -304,6 +342,7 @@ async def generate_audio_for_walkthrough(walkthrough_id: str):
     if not walkthrough:
         return
 
+    audio_generating.add(walkthrough_id)
     audio_generator = AudioGeneratorService()
     start = time.perf_counter()
 
@@ -361,4 +400,6 @@ async def generate_audio_for_walkthrough(walkthrough_id: str):
         error_msg = f"Audio generation failed for all {failed_count} segments – check ElevenLabs API key and quota"
         audio_failed[walkthrough_id] = error_msg
         print(f"⚠️  {error_msg} (walkthrough {walkthrough_id})")
+
+    audio_generating.discard(walkthrough_id)
 
