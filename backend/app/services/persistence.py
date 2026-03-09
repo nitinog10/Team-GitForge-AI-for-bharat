@@ -91,6 +91,7 @@ def save_repositories(repositories: Dict[str, Repository]):
                     "is_indexed": repo.is_indexed,
                     "indexed_at": repo.indexed_at.isoformat() if repo.indexed_at else "",
                     "created_at": repo.created_at.isoformat() if repo.created_at else "",
+                    "source": repo.source or "github",
                 }
                 batch.put_item(Item=item)
     except Exception as e:
@@ -130,8 +131,19 @@ def load_repositories() -> Dict[str, Repository]:
                 except Exception:
                     pass
 
-            repositories[item["id"]] = Repository(
-                id=item["id"],
+            # Reconstruct local_path from current repos_directory
+            stored_path = item.get("local_path") or None
+            repo_id = item["id"]
+            if stored_path:
+                local_path = os.path.join(settings.repos_directory, repo_id)
+            else:
+                local_path = None
+
+            # Infer source from ID prefix if not stored (backcompat)
+            source = item.get("source") or ("upload" if repo_id.startswith("upload_") else "github")
+
+            repositories[repo_id] = Repository(
+                id=repo_id,
                 user_id=item["user_id"],
                 github_repo_id=_safe_int(item.get("github_repo_id")),
                 name=item["name"],
@@ -140,10 +152,11 @@ def load_repositories() -> Dict[str, Repository]:
                 default_branch=item.get("default_branch", "main"),
                 language=item.get("language") or None,
                 clone_url=item["clone_url"],
-                local_path=item.get("local_path") or None,
+                local_path=local_path,
                 is_indexed=item.get("is_indexed", False),
                 indexed_at=indexed_at,
                 created_at=created_at,
+                source=source,
             )
 
         # Handle pagination
@@ -162,8 +175,19 @@ def load_repositories() -> Dict[str, Repository]:
                         created_at = datetime.fromisoformat(item["created_at"])
                     except Exception:
                         pass
-                repositories[item["id"]] = Repository(
-                    id=item["id"],
+
+                stored_path = item.get("local_path") or None
+                repo_id = item["id"]
+                if stored_path:
+                    local_path = os.path.join(settings.repos_directory, repo_id)
+                else:
+                    local_path = None
+
+                # Infer source from ID prefix if not stored (backcompat)
+                source = item.get("source") or ("upload" if repo_id.startswith("upload_") else "github")
+
+                repositories[repo_id] = Repository(
+                    id=repo_id,
                     user_id=item["user_id"],
                     github_repo_id=_safe_int(item.get("github_repo_id")),
                     name=item["name"],
@@ -172,10 +196,11 @@ def load_repositories() -> Dict[str, Repository]:
                     default_branch=item.get("default_branch", "main"),
                     language=item.get("language") or None,
                     clone_url=item["clone_url"],
-                    local_path=item.get("local_path") or None,
+                    local_path=local_path,
                     is_indexed=item.get("is_indexed", False),
                     indexed_at=indexed_at,
                     created_at=created_at,
+                    source=source,
                 )
 
         return repositories

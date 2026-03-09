@@ -382,6 +382,12 @@ async def index_repository(
         raise HTTPException(status_code=404, detail="Repository not found")
     
     if not repo.local_path or not os.path.exists(repo.local_path):
+        # For uploaded repos, files can't be recovered after server restart
+        if repo.source == "upload":
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded project files are no longer available. Please re-upload the ZIP file.",
+            )
         raise HTTPException(status_code=400, detail="Repository not cloned yet")
     
     # Start indexing in background
