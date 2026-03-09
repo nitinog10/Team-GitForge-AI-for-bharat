@@ -21,7 +21,7 @@ from app.models.schemas import (
     APIResponse,
 )
 from app.api.endpoints.auth import get_current_user
-from app.api.endpoints.repositories import repositories_db
+from app.api.endpoints.repositories import repositories_db, _ensure_repo_cloned
 from app.services.persistence import (
     save_walkthroughs, load_walkthroughs,
     save_audio_walkthroughs, load_audio_walkthroughs,
@@ -63,6 +63,20 @@ async def generate_walkthrough(
     
     if not repo.local_path:
         raise HTTPException(status_code=400, detail="Repository not cloned yet")
+    
+    # Re-clone if local files are missing (App Runner restart)
+    if not os.path.exists(repo.local_path):
+        if repo.source == "upload":
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded project files are no longer available. Please re-upload the ZIP file.",
+            )
+        await _ensure_repo_cloned(repo, user.access_token)
+        if not repo.local_path or not os.path.exists(repo.local_path):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to re-download repository files. Please try reconnecting the repository.",
+            )
     
     # Read file content
     safe_path = os.path.normpath(request.file_path).lstrip(os.sep).lstrip("/")

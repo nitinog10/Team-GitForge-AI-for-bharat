@@ -5,11 +5,14 @@ Generate and retrieve structured MNC-standard documentation for repositories.
 """
 
 import logging
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+import os
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
 
 from app.config import get_settings
 from app.services.documentation_generator import DocumentationGenerator
 from app.services.persistence import save_documentation_cache, load_documentation_cache
+from app.api.endpoints.auth import get_current_user
+from app.api.endpoints.repositories import repositories_db, _ensure_repo_cloned
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +34,11 @@ async def _generate_task(repo_id: str):
     """Background task that generates documentation and caches it."""
     try:
         path = _repo_path(repo_id)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Repository files not found at '{path}'. "
+                "The server may have restarted. Please go back and re-open the repository to trigger a re-download."
+            )
         result = await doc_generator.generate_repository_docs(path)
         docs_cache[repo_id] = result
         save_documentation_cache(docs_cache)  # persist to disk
@@ -50,8 +58,32 @@ async def _generate_task(repo_id: str):
 
 
 @router.post("/{repo_id}/generate")
-async def generate_docs(repo_id: str, background_tasks: BackgroundTasks):
+async def generate_docs(repo_id: str, background_tasks: BackgroundTasks, authorization: str = Header(None)):
     """Kick off documentation generation in the background."""
+    user = await get_current_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    repo = repositories_db.get(repo_id)
+    if not repo or repo.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Ensure repo files are on disk; re-clone from GitHub if needed
+    path = _repo_path(repo_id)
+    if not os.path.exists(path):
+        if repo.source == "upload":
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded project files are no longer available. Please re-upload the ZIP file.",
+            )
+        # Re-clone from GitHub (App Runner restart wiped local files)
+        await _ensure_repo_cloned(repo, user.access_token)
+        if not os.path.exists(path):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to re-download repository files. Please try reconnecting the repository.",
+            )
+
     if docs_generating.get(repo_id):
         return {"status": "generating", "message": "Documentation is already being generated."}
 
@@ -77,9 +109,27 @@ async def get_docs(repo_id: str):
 
 
 @router.get("/{repo_id}/file")
-async def get_file_docs(repo_id: str, path: str):
+async def get_file_docs(repo_id: str, path: str, authorization: str = Header(None)):
     """Generate documentation for a single file on demand."""
+    user = await get_current_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    repo = repositories_db.get(repo_id)
+    if not repo or repo.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
     repo_path = _repo_path(repo_id)
+    if not os.path.exists(repo_path):
+        if repo.source == "upload":
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded project files are no longer available. Please re-upload the ZIP file.",
+            )
+        await _ensure_repo_cloned(repo, user.access_token)
+        if not os.path.exists(repo_path):
+            raise HTTPException(status_code=500, detail="Failed to re-download repository files.")
+
     try:
         result = await doc_generator.generate_file_docs(repo_path, path)
         return {"status": "ready", "data": result}
