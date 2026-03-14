@@ -232,19 +232,23 @@ class DocumentationGenerator:
         # Truncate very long files for the prompt
         src_for_prompt = source[:12000] if len(source) > 12000 else source
 
-        prompt = f"""You are a senior software engineer writing internal documentation for an MNC.
+        prompt = f"""You are a senior software engineer writing internal documentation for your team.
+Write as if you're explaining this file to a smart junior developer who just joined the project.
+Use a natural, conversational-but-professional tone — the way a real engineer would explain things in a design doc or code review.
 
-Produce structured documentation for the file **{rel_path}** ({lang or 'unknown'}).
+Document the file **{rel_path}** ({lang or 'unknown language'}).
 
-Rules:
-- Return ONLY markdown.
-- Start with a one-paragraph **Module Overview** (what this file does, why it exists).
-- Then a **Dependencies** section listing imports / external deps.
-- If there are classes, add a **Classes** section with a table: | Class | Purpose | Key Methods |
-- If there are functions, add a **Functions** section with a table: | Function | Parameters | Returns | Description |
-- If applicable, add **Configuration** or **Constants** section.
-- End with a **Notes / Edge Cases** section if relevant.
-- Be concise but thorough. Use professional tone.
+Guidelines:
+- Start with a **Module Overview**: one concise paragraph explaining what this file does and why it exists in the codebase. Be direct — avoid filler phrases like "This file is responsible for..." or "This module serves as...". Just say what it does.
+- Add a **Dependencies** section listing key imports and what they bring to the table.
+- For classes, add a **Classes** section with a table: | Class | Purpose | Key Methods |
+- For functions, add a **Functions** section with a table: | Function | Parameters | Returns | Description |
+- If relevant, add **Configuration** or **Constants** section.
+- End with **Notes** if there are gotchas, edge cases, or things the next developer should know.
+- Use backtick notation for code identifiers (e.g. `functionName`), NEVER wrap identifiers in single quotes.
+- Do NOT use phrases like "it is important to note", "it should be noted", "as we can see". Just state facts directly.
+- Keep it concise. Engineers skim docs — respect their time.
+- Output ONLY valid markdown. No preamble or meta-commentary.
 
 {("AST Structure:" + chr(10) + ast_summary) if ast_summary else ""}
 
@@ -308,7 +312,8 @@ Source code:
         file_summaries = "\n".join(
             f"- **{d['path']}**: {d['summary'][:120]}" for d in file_docs[:40]
         )
-        prompt = f"""Write a professional **Project Overview** (3-5 paragraphs) for the repository "{repo_name}".
+        prompt = f"""Write a clear **Project Overview** (3-5 paragraphs) for the repository "{repo_name}".
+Write like a senior engineer briefing a new team member. Be direct and informative.
 
 Folder structure:
 ```
@@ -318,7 +323,9 @@ Folder structure:
 File summaries:
 {file_summaries[:4000]}
 
-Include: purpose, tech stack, high-level architecture, and intended audience.
+Cover: what this project does, the tech stack, how the pieces fit together, and who would use it.
+Don't use filler phrases like "This project is designed to..." — just explain what it does.
+Use backtick notation for code identifiers, never single quotes.
 Output only markdown (no title heading needed)."""
 
         system = "You are a documentation engineer. Output only markdown."
@@ -339,6 +346,7 @@ Output only markdown (no title heading needed)."""
             f"- **{d['path']}**: {d['summary'][:100]}" for d in file_docs[:40]
         )
         prompt = f"""Based on this repository structure and file summaries, write an **Architecture** section.
+Write like you're explaining the codebase architecture to a new team member during onboarding.
 
 Structure:
 ```
@@ -348,7 +356,9 @@ Structure:
 Files:
 {file_summaries[:4000]}
 
-Cover: layers / modules, data flow, key design patterns, entry points.
+Cover: how the code is organized (layers, modules), how data flows through the system, key design patterns used, and where the main entry points are.
+Be practical — describe what matters for someone who needs to work on this code.
+Use backtick notation for code identifiers, never single quotes.
 Output only markdown (no title heading needed)."""
 
         system = "You are a documentation engineer. Output only markdown."

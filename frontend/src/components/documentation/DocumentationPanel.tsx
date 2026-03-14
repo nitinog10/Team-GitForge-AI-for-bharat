@@ -402,7 +402,22 @@ function MarkdownBlock({ content }: { content: string }) {
       i++; continue
     }
 
-    // List
+    // Numbered list (e.g. "1. item")
+    if (/^\d+\.\s/.test(line.trim())) {
+      const listItems: string[] = []
+      while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
+        listItems.push(lines[i].trim().replace(/^\d+\.\s/, ''))
+        i++
+      }
+      elements.push(
+        <ol key={elements.length} className="list-decimal list-inside space-y-0.5 my-1 ios-caption1 text-dv-text-secondary">
+          {listItems.map((item, j) => <li key={j}>{renderInline(item)}</li>)}
+        </ol>
+      )
+      continue
+    }
+
+    // Unordered list
     if (/^[-*]\s/.test(line.trim())) {
       const listItems: string[] = []
       while (i < lines.length && /^[-*]\s/.test(lines[i].trim())) {
@@ -428,10 +443,22 @@ function MarkdownBlock({ content }: { content: string }) {
   return <>{elements}</>
 }
 
-/** Render inline markdown: bold, inline-code */
+/** Render inline markdown: bold, inline-code, and clean up stray quotes */
 function renderInline(text: string): React.ReactNode {
+  // Clean up common LLM artifacts:
+  // - Stray single-quotes wrapping words (e.g. 'function' → function)
+  // - Escaped apostrophes \' → '
+  let cleaned = text
+    .replace(/\\'/g, "'")
+    // Remove single quotes used as code markers (but keep real apostrophes like don't, it's)
+    .replace(/'([^'\s][^']*[^'\s])'/g, (match, inner) => {
+      // Keep if it looks like a contraction (word's, don't, etc.)
+      if (/^\w+'\w+$/.test(match)) return match
+      return inner
+    })
+
   // Split on **bold** and `code`
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
+  const parts = cleaned.split(/(\*\*[^*]+\*\*|`[^`]+`)/g)
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**'))
       return <strong key={i} className="text-dv-text font-semibold">{part.slice(2, -2)}</strong>
