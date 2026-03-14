@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useUserStore } from '@/lib/store'
 
-const PUBLIC_ROUTES = ['/auth/signin', '/auth/callback', '/', '/login']
+const PUBLIC_ROUTES = ['/auth/signin', '/auth/callback', '/', '/login', '/demo', '/extension-auth', '/mcp-guide']
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()

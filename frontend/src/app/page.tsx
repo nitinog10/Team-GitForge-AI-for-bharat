@@ -175,10 +175,11 @@ export default function HomePage() {
                 <ArrowRight className="w-4 h-4 -ml-0.5 group-hover:translate-x-0.5 transition-transform" />
               </Link>
               <Link
-                href="/dashboard"
+                href="/demo"
                 className="flex items-center gap-2 text-[15px] font-medium text-dv-text/60 hover:text-dv-text px-6 py-3.5 rounded-full bg-[var(--glass-4)] backdrop-blur-xl border border-dv-border hover:bg-[var(--glass-8)] hover:border-dv-border transition-all"
               >
-                View dashboard
+                <Sparkles className="w-4 h-4" />
+                Explore Demo
                 <ChevronRight className="w-4 h-4" />
               </Link>
             </motion.div>

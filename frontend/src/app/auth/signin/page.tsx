@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Code2, Loader2 } from 'lucide-react'
+import { Code2, Loader2, Sparkles, ArrowRight } from 'lucide-react'
 import Link from 'next/link'
 import { auth } from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -93,6 +93,33 @@ export default function SignInPage() {
           {error && (
             <p className="mt-3 text-[12px] text-dv-error">{error}</p>
           )}
+        </motion.div>
+
+        {/* Demo option */}
+        <motion.div
+          className="mt-6"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4, duration: 0.5, ease }}
+        >
+          <div className="flex items-center gap-3 mb-5">
+            <div className="flex-1 h-px bg-dv-border-subtle" />
+            <span className="text-[11px] text-dv-text/20 uppercase tracking-wider font-medium">or</span>
+            <div className="flex-1 h-px bg-dv-border-subtle" />
+          </div>
+          <Link
+            href="/demo"
+            className="w-full flex items-center justify-center gap-2.5 py-3 px-5 rounded-[14px]
+                     bg-[var(--glass-6)] backdrop-blur-xl border border-dv-border text-dv-text/60 font-medium text-[14px]
+                     hover:bg-[var(--glass-10)] hover:text-dv-text/80 hover:border-dv-border active:scale-[0.97] transition-all"
+          >
+            <Sparkles className="w-4 h-4 text-dv-accent" />
+            Explore Demo
+            <ArrowRight className="w-3.5 h-3.5 opacity-40" />
+          </Link>
+          <p className="text-[11px] text-dv-text/20 mt-2.5 text-center">
+            No account needed — try a full walkthrough instantly
+          </p>
         </motion.div>
 
         {/* Footer */}
