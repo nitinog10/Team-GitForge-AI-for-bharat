@@ -87,6 +87,13 @@ export default function HomePage() {
                 {item}
               </button>
             ))}
+            <Link
+              href="/mcp-guide"
+              className="text-[13px] text-dv-text/50 hover:text-dv-text/90 transition-colors duration-200 flex items-center gap-1.5"
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              Use in IDE
+            </Link>
           </div>
 
           <div className="flex items-center gap-3">
