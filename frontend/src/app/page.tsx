@@ -135,7 +135,7 @@ export default function HomePage() {
             <motion.div variants={riseUp}>
               <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[var(--glass-6)] backdrop-blur-xl border border-dv-border text-[13px] text-dv-text/60 mb-6 shadow-[var(--inset)]">
                 <span className="w-1.5 h-1.5 rounded-full bg-dv-success animate-pulse" />
-                Powered by team GitForge
+                Powered by team BitMask
               </span>
             </motion.div>
 
